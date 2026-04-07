@@ -54,7 +54,7 @@ struct
 }flows_map SEC(".maps");
 
 
-static inline void new_flow(struct flow_value *values)
+static inline void new_flow(struct flow_value *values)       //initialize new flow
 {
     values->first_seen = 0;
     values->last_seen = 0;
@@ -73,7 +73,7 @@ static inline void new_flow(struct flow_value *values)
     values->rule_3_low_pack_count = 2;
 }
 
-static inline void update_flow(struct flow_value *values, __u64 packet_length, __u64 packet_time, struct tcphdr *tcp,__u64 segment_size)
+static inline void update_flow(struct flow_value *values, __u64 packet_length, __u64 packet_time, struct tcphdr *tcp,__u64 segment_size)      //update flow
 {
     __u64 start_extraction_time = bpf_ktime_get_ns();
     values->pkt_count++;

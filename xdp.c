@@ -15,57 +15,66 @@ struct
     __uint(max_entries, 1024);
     __type(key, __u32);              
     __type(value, __u32);
-} progs SEC(".maps");
+} progs SEC(".maps");         // XDP programs array
 
-struct {
+struct 
+{
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1024);
     __type(key, __u32);         // src IP
     __type(value, __u64);       // timestamp (in ns)
-} blacklist SEC(".maps");
+} blacklist SEC(".maps");      // IP blacklist
 
-struct {
+struct 
+{
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 2); // Only two labels: benign (0) and malicious (1), (2) total ns, (3) packets extraction time, (4) all packets
+    // max entries are set at 2 for now, for latency metrics change to 5 (benign (0), malicious (1))
+    __uint(max_entries, 2); // 5 labels: benign (0) and malicious (1), (2) total ns, (3) packets extraction time, (4) all packets
     __type(key, __u32);
     __type(value, __u64);
 } label_counters SEC(".maps");
-static inline int get_key(struct xdp_md *ctx,  struct flow_key *key)
+static inline int get_key(struct xdp_md *ctx,  struct flow_key *key)        // this function gets called inside each XDP program and fetces flow 5-tuple
 {
     void *data_start = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
-    if (data_start + sizeof(struct ethhdr) > data_end) {
+    if (data_start + sizeof(struct ethhdr) > data_end)  //verifier requirement
+    {
         bpf_printk("eth hdr too short\n");
         return -1;
     }
     struct ethhdr *eth = data_start;
-    if (eth->h_proto != bpf_htons(ETH_P_IP)) {
+    if (eth->h_proto != bpf_htons(ETH_P_IP))  //verifier requirement
+    {
         bpf_printk("not IPv4\n");
         return -1;
     }
-    struct iphdr *ip = data_start + sizeof(struct ethhdr);
-    if ((void *)ip + sizeof(struct iphdr) > data_end) {
+    struct iphdr *ip = data_start + sizeof(struct ethhdr); //verifier requirement
+    if ((void *)ip + sizeof(struct iphdr) > data_end) 
+    {
         bpf_printk("IP hdr too short\n");
         return -1;
     }
     __u32 ip_header_len = ip->ihl * 4;
-    if (ip_header_len < sizeof(struct iphdr) ||
-        data_start + sizeof(struct ethhdr) + ip_header_len > data_end) {
+    if (ip_header_len < sizeof(struct iphdr) || data_start + sizeof(struct ethhdr) + ip_header_len > data_end) //verifier requirement
+    {
         bpf_printk("invalid IP hdr len\n");
         return -1;
     }
-    if (ip->protocol != 6) {
+    if (ip->protocol != 6) // we handle only TCP packets
+    {
         bpf_printk("not TCP\n");
         return -1;
     }
-    struct tcphdr *tcp = (void *)ip + ip_header_len;
-    if ((void *)tcp + sizeof(struct tcphdr) > data_end) {
+
+    struct tcphdr *tcp = (void *)ip + ip_header_len; //verifier requirement
+    if ((void *)tcp + sizeof(struct tcphdr) > data_end) 
+    {
         bpf_printk("TCP hdr too short\n");
         return -1;
     }
     __u32 tcp_header_len = tcp->doff * 4;
-    if (tcp_header_len < sizeof(struct tcphdr) ||
-        (void *)tcp + tcp_header_len > data_end) {
+    if (tcp_header_len < sizeof(struct tcphdr) || (void *)tcp + tcp_header_len > data_end)  //verifier requirement
+    {
         bpf_printk("invalid TCP hdr len\n");
         return -1;
     }
@@ -76,6 +85,7 @@ static inline int get_key(struct xdp_md *ctx,  struct flow_key *key)
     key->protocol = ip->protocol;
     return 0;
 }
+
 SEC("xdp")
 int xdp_nn(struct xdp_md *ctx)
 {
@@ -90,52 +100,35 @@ int xdp_nn(struct xdp_md *ctx)
         return XDP_ABORTED;
     }
 
-    if ((void *)ip + sizeof(struct iphdr) > data_end) 
+    if ((void *)ip + sizeof(struct iphdr) > data_end)  //verifier requirement
     {
         bpf_printk("IP header too short\n");
         return XDP_ABORTED;
     }
     __u32 ip_header_len = ip->ihl * 4;                     //invalid header length
-    if (data_start + sizeof(struct ethhdr) + ip_header_len > data_end) {
+    if (data_start + sizeof(struct ethhdr) + ip_header_len > data_end) 
+    {
         bpf_printk("Invalid IP header length\n");
         return XDP_ABORTED;
-    }
-    // Block all 127.x.x.x traffic
-    if ((ip->saddr & 0xFF000000) == 0x7F000000) {
-        bpf_printk("Blocking loopback traffic\n");
-        return XDP_DROP;
     }
 
     if(ip->protocol == 1) // ICMP
     {
-        //bpf_printk("ICMP packet\n");
         return XDP_DROP;
     }
     if(ip->protocol == 17) // UDP
     {
-        //bpf_printk("UDP packet\n");
         return XDP_DROP;
     }
-    if(ip->protocol == 6) // TCP
+    if(ip->protocol == 6) // we only keep TCP and initialize flow creation process
     {
         struct tcphdr *tcp = (void *)ip + ip_header_len;
-        // if (tcp->syn && tcp->fin) 
-        // {
-        //     return XDP_DROP;  // SYN-FIN scan
-        // }
-        // if (!(tcp->syn || tcp->fin || tcp->rst || tcp->ack || tcp->psh || tcp->urg)) 
-        // {
-        //     return XDP_DROP;  // NULL scan
-        // }
-        // if (tcp->fin && tcp->psh && tcp->urg)
-        // {
-        //     return XDP_DROP;  // Xmas scan
-        // }
+
         __u32 src_ip = ip->saddr;
         __u64 *time = bpf_map_lookup_elem(&blacklist, &src_ip);
         __u64 now = bpf_ktime_get_ns();
 
-        if(time) 
+        if(time) // check and update blacklist
         {
             if ((now - *time) < BLOCK_SECONDS) 
             {
@@ -155,27 +148,31 @@ int xdp_nn(struct xdp_md *ctx)
             }
         }
 
-        if ((void *)tcp + sizeof(struct tcphdr) > data_end) {
+        if ((void *)tcp + sizeof(struct tcphdr) > data_end) //verifier requirement
+        {
             bpf_printk("TCP header too short\n");
             return XDP_ABORTED;
         }
 
         __u32 tcp_header_len = tcp->doff * 4;
-        if (tcp_header_len < sizeof(struct tcphdr)) {
+        if (tcp_header_len < sizeof(struct tcphdr))  //verifier requirement
+        {
             bpf_printk("Invalid TCP header length\n");
             return XDP_ABORTED;
         }
 
-        if ((void *)tcp + tcp_header_len > data_end) {
+        if ((void *)tcp + tcp_header_len > data_end) //verifier requirement
+        {
             bpf_printk("TCP header exceeds packet bounds\n");
             return XDP_ABORTED;
         }
-        __u64 packet_time = bpf_ktime_get_ns();
+        __u64 packet_time = bpf_ktime_get_ns();                                            //compute feature values
         __u16 ip_total_len = bpf_ntohs(ip->tot_len);
         __u64 packet_length = (__u64)(ip_total_len - ip_header_len);
-        __u64 segment_size = (__u64)(ip_total_len - ip_header_len - tcp_header_len);
+        __u64 segment_size = (__u64)(ip_total_len - ip_header_len - tcp_header_len);       //compute feature values
         //bpf_printk("\nSegment size: %u\n", segment_size);
-        struct flow_key key = {
+        struct flow_key key =                                                           // get key   
+        {
             .source_ip = ip->saddr,                        
             .destination_ip = ip->daddr,
             .source_port = bpf_ntohs(tcp->source),         
@@ -183,19 +180,19 @@ int xdp_nn(struct xdp_md *ctx)
             .protocol = ip->protocol
         };
         
-        struct flow_value *value = bpf_map_lookup_elem(&flows_map, &key);
+        struct flow_value *value = bpf_map_lookup_elem(&flows_map, &key);              // get values
         int is_new_flow = 0;
         int16_t malicious_ports[] = {22, 21, 23, 445, 3389, 5900, 135, 
             1433, 1900,2323,4444,6667,31337,12345,69};
 
-        if(!value)
+        if(!value)     // if value does not exist -> flow does not exist -> register new flow
         {
             struct flow_value new_values = {};
             new_flow(&new_values);
             new_values.first_seen = packet_time;
             new_values.last_seen = new_values.first_seen;
             new_values.dst_port = bpf_ntohs(tcp->dest);
-            if (new_values.dst_port == 22   || new_values.dst_port == 21    ||
+            if (new_values.dst_port == 22   || new_values.dst_port == 21    ||        // check if possible malicious port
                 new_values.dst_port == 23   || new_values.dst_port == 445   || 
                 new_values.dst_port == 3389 || new_values.dst_port == 5900  ||
                 new_values.dst_port == 135  || new_values.dst_port == 1433  ||
@@ -212,15 +209,15 @@ int xdp_nn(struct xdp_md *ctx)
             }
 
             new_values.init_win = bpf_ntohs(tcp->window);
-            //bpf_printk("Initial TCP window size: %u", new_values.init_win);
+            //bpf_printk("Initial TCP window size: %u", new_values.init_win);       //Debugging
             //bpf_printk("New flow: src=%x spt=%u dst=%x dpt=%u\n",
-           //     key.source_ip, key.source_port,
-             //   key.destination_ip, key.destination_port);
+            //     key.source_ip, key.source_port,
+            //   key.destination_ip, key.destination_port);
             if (bpf_map_update_elem(&flows_map, &key, &new_values, BPF_NOEXIST)) 
             {
                 return XDP_PASS;
             }
-            //bpf_printk("Flow added to map\n");
+            //bpf_printk("Flow added to map\n"); //Debugging
 
             is_new_flow = 1;
         
@@ -230,11 +227,11 @@ int xdp_nn(struct xdp_md *ctx)
             }
         }
         update_flow(value, packet_length, packet_time, tcp, segment_size);
-        //bpf_printk("Flow updated: pkts=%u bytes=%u\n", value->pkt_count, value->total_bytes);
+        //bpf_printk("Flow updated: pkts=%u bytes=%u\n", value->pkt_count, value->total_bytes);   //Debugging
 
         __u64 ddos_now = bpf_ktime_get_ns();
 
-        if (tcp->fin || tcp->rst) 
+        if (tcp->fin || tcp->rst)                    // fill rules
         {
                 if (value->seg_size_min <= 20)
                 {
@@ -253,25 +250,25 @@ int xdp_nn(struct xdp_md *ctx)
                 {
                     value->rule_3_low_pack_count = 0;
                 }
-                // bpf_printk("src:%x dst:%x spt:%u dpt:%u", key.source_ip, key.destination_ip, key.source_port, key.destination_port);
-                // bpf_printk("FLOW dst:%hu pkts:%u bytes:%u\n",
+                // bpf_printk("src:%x dst:%x spt:%u dpt:%u", key.source_ip, key.destination_ip, key.source_port, key.destination_port);   //Debugging
+                // bpf_printk("FLOW dst:%hu pkts:%u bytes:%u\n",                    
                 //     value->dst_port, value->pkt_count, value->total_bytes);
                 
-                // bpf_printk("min_pkt:%u max_pkt:%u\n",
+                // bpf_printk("min_pkt:%u max_pkt:%u\n",                                             //Debugging
                 //     value->min_pkt_len, value->max_pkt_len);
                 
-                // bpf_printk("seg_min:%llu psh:%hhu\n",
+                // bpf_printk("seg_min:%llu psh:%hhu\n",                                             //Debugging
                 //     value->seg_size_min, value->psh_flags);
                 
-                // bpf_printk("iat_min:%llu iat_max:%llu, rule1: %u\n",
+                // bpf_printk("iat_min:%llu iat_max:%llu, rule1: %u\n",                                   //Debugging
                 //     value->iat_stats.min, value->iat_stats.max, value->rule_1_mal_ports);
                 
-                // bpf_printk("Flow %s: %s",
+                // bpf_printk("Flow %s: %s",                                                             //Debugging
                 //      (tcp->fin || tcp->rst) ? "ended by FIN/RST" : "timed out",
                 //      (ddos_now - value->last_seen > TIMEOUT_FLOW) ? "flow timed out" : "normal");
                 __u32 idx = 0;
                 int32_t *idx_ptr = bpf_map_lookup_elem(&nn_index, &idx);
-                //bpf_printk("POINTER :%d\n",idx_ptr);
+                //bpf_printk("POINTER :%d\n",idx_ptr);                 //Debugging
 
                 if(idx_ptr && value)
                 {
@@ -279,22 +276,10 @@ int xdp_nn(struct xdp_md *ctx)
                     value->detection_start_time = bpf_ktime_get_ns();
                     bpf_tail_call(ctx, &progs, 0);
                 }
-
-                // int32_t idx = 0;
-                // int32_t *idx_ptr = bpf_map_lookup_elem(&nn_index, &idx);
-                // struct flow_value *attr_ptr = (struct flow_value *)bpf_map_lookup_elem(&flows_map, &key);
-
-                // if (idx_ptr && attr_ptr)
-                // {
-                //     attr_ptr->nn_index = *idx_ptr;
-                //     bpf_tail_call(ctx, &progs, 0);
-                // }
-                
         } 
         return XDP_PASS;
-
     }
-    //bpf_printk("packet passed\n");
+    //bpf_printk("packet passed\n"); //Debugging
     return XDP_PASS;
 }
 SEC("xdp")
@@ -302,18 +287,18 @@ int xdp_live_feature_preprocessing(struct xdp_md *ctx)
 {
     
     struct flow_key key = {};
-    if(get_key(ctx, &key)  < 0)
+    if(get_key(ctx, &key)  < 0)               // get key
     {
         bpf_printk("failed0\n");
         return XDP_PASS;
     }
-    struct flow_value *value = (struct flow_value *) bpf_map_lookup_elem(&flows_map, &key);
+    struct flow_value *value = (struct flow_value *) bpf_map_lookup_elem(&flows_map, &key);    // get value
     if(!value)
     { 
         bpf_printk("failed1\n");
         return XDP_PASS;
     }
-    struct NeuralNetwork *nn = bpf_map_lookup_elem(&nn_params, &(value->nn_index)); //FETCH THE RUNNING PARAMS
+    struct NeuralNetwork *nn = bpf_map_lookup_elem(&nn_params, &(value->nn_index)); //FETCH THE RUNNING PARAMS 
     if(!nn)
     {
         bpf_printk("failed2\n");
@@ -335,7 +320,8 @@ int xdp_live_feature_preprocessing(struct xdp_md *ctx)
         value->rule_2_small_seg_size,
         value->rule_3_low_pack_count
     };
-    struct norm_params p = {
+    struct norm_params p = 
+    {
         .no_n_x = features,
         .q_x = value->normalized_weights,
         .mean = nn->mean,
@@ -344,9 +330,9 @@ int xdp_live_feature_preprocessing(struct xdp_md *ctx)
         .zps = nn->layer0_zp,
         .N = 13
     };
-    //value->detection_start_time = bpf_ktime_get_ns();
+    //value->detection_start_time = bpf_ktime_get_ns();    //uncomment for latency
     normalize(&p);
-    // bpf_printk("Norm weights: %d %d %d %d", 
+    // bpf_printk("Norm weights: %d %d %d %d",        //debugging
     //     value->normalized_weights[0],
     //     value->normalized_weights[1], 
     //     value->normalized_weights[2],
@@ -525,7 +511,7 @@ int xdp_layer_2(struct xdp_md *ctx)
     linear(&p);
     __u64 det_time = bpf_ktime_get_ns() - value->detection_start_time;
     int diff = value->layer_output[1] - value->layer_output[0];
-    int label = diff > 53;  // e.g. 53 for 0.7085299 threshold
+    int label = diff > 53;  // 53 for 0.7085299 threshold
 
     __u32 labelkey = label ? 1 : 0;
     __u64 *count = bpf_map_lookup_elem(&label_counters, &labelkey);
@@ -540,26 +526,26 @@ int xdp_layer_2(struct xdp_md *ctx)
         bpf_map_update_elem(&blacklist, &src_ip, &now, BPF_ANY);
         //bpf_printk("ADDDED TO BLACKLIST\n");
     }
-    // bpf_printk("Classification: %s (Confidence: %d vs %d), detection time: %lld ns",
+    // bpf_printk("Classification: %s (Confidence: %d vs %d), detection time: %lld ns",         //debugging
     //         label ? "MALICIOUS" : "BENIGN",
     //         value->layer_output[0],
     //         value->layer_output[1],
     //         det_time);
 
-    // __u32 key2 = 2;
+    // __u32 key2 = 2;                                                           //uncomment only if array[5]
     // __u64 *total_time = bpf_map_lookup_elem(&label_counters, &key2);
     // if (total_time) 
     // {
     //     __sync_fetch_and_add(total_time, det_time);
     // }     
     
-    // __u32 key3 = 3;
+    // __u32 key3 = 3;                                                           //uncomment only if array[5]
     // __u64 *total_pack_time = bpf_map_lookup_elem(&label_counters, &key3);
     // if (total_pack_time) 
     // {
     //     __sync_fetch_and_add(total_pack_time, value->feat_extraction_time);
     // }  
-    // __u32 key4 = 4;
+    // __u32 key4 = 4;                                                           //uncomment only if array[5]
     // __u64 *total_packets = bpf_map_lookup_elem(&label_counters, &key4);
     // if (total_packets) 
     // {
@@ -569,16 +555,5 @@ int xdp_layer_2(struct xdp_md *ctx)
     bpf_map_delete_elem(&flows_map, &key);
     return XDP_PASS;
 }
-//     "Destination Port",
-//     "Init_Win_bytes_forward", 
-//     "min_seg_size_forward",
-//     " Fwd Packet Length Max", 
-//     "Subflow Fwd Bytes",
-//     "Fwd Header Length.1",
-//     "Fwd IAT Min", 
-//     "Subflow Fwd Packets", 
-//     "Fwd IAT Max",
-//     "Fwd IAT Total",
-//     "Fwd PSH Flags",
-//     "Fwd Packet Length Min",
+
 char LICENSE[] SEC("license") = "GPL";
