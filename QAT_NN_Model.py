@@ -1,12 +1,8 @@
 import torch
 from torch import nn
-from torch import functional as F #moves data forward
-import torch.optim as optim
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
@@ -15,19 +11,16 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.ensemble import RandomForestClassifier
-from torch.quantization import quantize_dynamic
 import os
 from sklearn.metrics import precision_recall_curve
 from torch.profiler import profile, record_function, ProfilerActivity
 tqdm.pandas()
 import time
 from torch.utils.data import  random_split
-from torch.quantization import QuantStub, DeQuantStub, prepare_qat, fuse_modules
-from torch.quantization import QConfig, default_observer, default_per_channel_weight_observer, get_default_qat_qconfig
-from torch.quantization import prepare_qat
+from torch.quantization import QuantStub, DeQuantStub, fuse_modules
 from torch.optim.lr_scheduler import OneCycleLR
 
-def compute_normalization_params(dataloader):
+def compute_normalization_params(dataloader):                 # normalize NN params
     features = []
     for batch in dataloader:
         features.append(batch[0])  
@@ -40,11 +33,11 @@ def compute_normalization_params(dataloader):
     
     return feature_mean, feature_std
 
-def measure_latency(model, dataloader, device, num_batches=100, warmup=10, use_profiler=False):
+def measure_latency(model, dataloader, device, num_batches=100, warmup=10, use_profiler=False):    # only more latency measurement
     model.eval()
     model.to(device)
     
-    # Warmup (important for CUDA/quantized models)
+    # warmup
     with torch.no_grad():
         for i, (inputs, _) in enumerate(dataloader):
             if i >= warmup:
@@ -52,13 +45,13 @@ def measure_latency(model, dataloader, device, num_batches=100, warmup=10, use_p
             inputs = inputs.to(device)
             _ = model(inputs)
     
-    # Measurement
+    # do the measurement
     total_time = 0.0
     count = 0
     batch_size = dataloader.batch_size
     
     if use_profiler:
-        # Detailed profiling with torch.profiler
+        #detailed profiling
         with profile(activities=[ProfilerActivity.CPU], record_shapes=True) as prof:
             with record_function("model_inference"):
                 for i, (inputs, _) in enumerate(dataloader):
@@ -70,7 +63,7 @@ def measure_latency(model, dataloader, device, num_batches=100, warmup=10, use_p
         print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=15))
         return
     
-    # Regular timing
+    #Regular timing
     with torch.no_grad():
         for i, (inputs, _) in enumerate(dataloader):
             if i >= num_batches:
@@ -78,7 +71,7 @@ def measure_latency(model, dataloader, device, num_batches=100, warmup=10, use_p
                 
             inputs = inputs.to(device)
             
-            # Synchronize if CUDA
+            #Synchronize if CUDA
             if device.type == 'cuda':
                 torch.cuda.synchronize()
             
@@ -112,7 +105,7 @@ class NeuralNetwork(nn.Module):
         self.quant = QuantStub()
         self.dequant = DeQuantStub()
         
-        # Layers with potential for fusion
+        #Layers 
         self.layer1 = nn.Linear(input_size, hidden_size, bias=False)
         self.relu1 = nn.ReLU()
         self.layer2 = nn.Linear(hidden_size, hidden_size,bias=False)
@@ -130,11 +123,11 @@ class NeuralNetwork(nn.Module):
         return x
     
     def fuse_model(self):
-        # Fuse layers for better quantization performance
+        #Fuse layers for better quantization performance
         fuse_modules(self, [['layer1', 'relu1'], ['layer2', 'relu2']], inplace=True)
 
 
-def prepare_model_for_qat(model):
+def prepare_model_for_qat(model):    #fake quantization so model is ready for QAT
     model.fuse_model()
     qconfig = torch.quantization.QConfig(
     activation=torch.quantization.FakeQuantize.with_args(
@@ -142,7 +135,7 @@ def prepare_model_for_qat(model):
         dtype=torch.quint8,
         qscheme=torch.per_tensor_affine,
         reduce_range=False,
-        quant_min=0,  # ensures ReLU alignment
+        quant_min=0,  #ensures ReLU alignment
         quant_max=255,
         averaging_constant=0.01
     ),
@@ -161,9 +154,9 @@ def prepare_model_for_qat(model):
 
 torch.manual_seed(25)
 model = NeuralNetwork()
-batch_size = 128 #
-learning_rate = 0.0001 # 
-epochs = 65  #
+batch_size = 128 
+learning_rate = 0.0001 
+epochs = 65  
 losses = []
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu") # Device
@@ -349,7 +342,7 @@ X_test[features_to_scale] = scaler.transform(X_test[features_to_scale])
 # print("X_train mean (float cols):", X_train.mean())
 # print("X_train std (float cols):", X_train.std())
 
-
+                                                                                                    # Uncomment for RandomForest significance + correlation per feature.
 
 # rf = RandomForestClassifier(n_estimators=100, random_state=25, n_jobs=-1)
 # rf.fit(X_train, y_train)
@@ -384,16 +377,14 @@ X_test[features_to_scale] = scaler.transform(X_test[features_to_scale])
 #     if importances[sorted_idx[i]] <= 0.01:
 #         print(f"{feature_names[sorted_idx[i]]}: {importances[sorted_idx[i]]:.5f}")
 
-# # Optional: Plot top 20
-# import matplotlib.pyplot as plt
+# # Plot top 20
+
 # plt.figure(figsize=(10, 6))
 # plt.barh(feature_names[sorted_idx[:20]][::-1], importances[sorted_idx[:20]][::-1])
 # plt.xlabel("Feature Importance")
 # plt.title("Top 20 Important Features (Random Forest)")
 # plt.tight_layout()
-# plt.show()
-# X_train[uint_cols] = X_train[uint_cols].astype(np.int32)
-# X_test[uint_cols] = X_test[uint_cols].astype(np.int32)
+# plt.show()                                                                             \\ IMPORTANCES + CORRELATION CODE ENDS HERE
 
 X_train_tensor = torch.tensor(X_train.values, dtype=torch.float32)
 X_test_tensor = torch.tensor(X_test.values, dtype=torch.float32)
@@ -413,7 +404,6 @@ test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=False, num_workers=6)
 feature_mean, feature_std = compute_normalization_params(train_loader)
 qat_model = prepare_model_for_qat(model)
-
 
 train_losses = []
 val_losses = []
@@ -437,44 +427,44 @@ def convert_to_quantized(model):
     quantized_model = torch.quantization.convert(model.eval(), inplace=False)
     return quantized_model
 
-def debug_quantization(qat_model, quantized_model, test_loader, device):
-    """Compare outputs between QAT and quantized models"""
-    qat_model.eval()
-    quantized_model.eval()
+# def debug_quantization(qat_model, quantized_model, test_loader, device):             This was used for debugging qat, it is optional
+#     """Compare outputs between QAT and quantized models"""
+#     qat_model.eval()
+#     quantized_model.eval()
     
-    # Get a small batch for comparison
-    for inputs, labels in test_loader:
-        inputs = inputs[:32]  # First 32 samples
-        break
+#     #Gets a small batch for comparison
+#     for inputs, labels in test_loader:
+#         inputs = inputs[:32]  # First 32 samples
+#         break
     
-    # QAT model outputs (on GPU/original device)
-    with torch.no_grad():
-        qat_outputs = qat_model(inputs.to(device))
-        qat_probs = torch.softmax(qat_outputs, dim=1)[:, 1]
+#     #QAT model outputs GPU
+#     with torch.no_grad():
+#         qat_outputs = qat_model(inputs.to(device))
+#         qat_probs = torch.softmax(qat_outputs, dim=1)[:, 1]
     
-    # Quantized model outputs (on CPU)
-    with torch.no_grad():
-        quant_outputs = quantized_model(inputs.to('cpu'))
-        quant_probs = torch.softmax(quant_outputs, dim=1)[:, 1]
+#     #Quantized model outputs CPU
+#     with torch.no_grad():
+#         quant_outputs = quantized_model(inputs.to('cpu'))
+#         quant_probs = torch.softmax(quant_outputs, dim=1)[:, 1]
     
-    print(f"\nDEBUG: Model Output Comparison")
-    print(f"QAT probabilities: {qat_probs[:5].cpu().numpy()}")
-    print(f"Quantized probabilities: {quant_probs[:5].numpy()}")
-    print(f"QAT mean/std: {qat_probs.mean():.6f}/{qat_probs.std():.6f}")
-    print(f"Quantized mean/std: {quant_probs.mean():.6f}/{quant_probs.std():.6f}")
-    print(f"Max difference: {torch.abs(qat_probs.cpu() - quant_probs).max():.6f}")
+#     print(f"\nDEBUG: Model Output Comparison")
+#     print(f"QAT probabilities: {qat_probs[:5].cpu().numpy()}")
+#     print(f"Quantized probabilities: {quant_probs[:5].numpy()}")
+#     print(f"QAT mean/std: {qat_probs.mean():.6f}/{qat_probs.std():.6f}")
+#     print(f"Quantized mean/std: {quant_probs.mean():.6f}/{quant_probs.std():.6f}")
+#     print(f"Max difference: {torch.abs(qat_probs.cpu() - quant_probs).max():.6f}")
 
 def train_with_qat(model, device, train_loader, val_loader, criterion, optimizer, scheduler=None, epochs=10):
     train_losses = []
     val_losses = []
-    learning_rates = []  # Track LR changes
-    model.train()  # Set to QAT training mode
+    learning_rates = []  #Track LR changes
+    model.train()  #Set to QAT training mode
     
     for epoch in range(epochs):
         model.train()
         epoch_loss = 0.0
         
-        # Training Phase
+        #Training Phase
         for batch_inputs, batch_labels in train_loader:
             batch_inputs = batch_inputs.to(device, non_blocking=True)
             batch_labels = batch_labels.to(device, non_blocking=True)
@@ -484,13 +474,13 @@ def train_with_qat(model, device, train_loader, val_loader, criterion, optimizer
             loss = criterion(y_pred, batch_labels.long())
             loss.backward()
             optimizer.step()
-            scheduler.step()  # update LR after each batch
+            scheduler.step()  #  update LR after each batch
             epoch_loss += loss.item()
 
         avg_train_loss = epoch_loss / len(train_loader)
         train_losses.append(avg_train_loss)
 
-        # Validation Phase
+        #Validation Phase
         model.eval()
         val_epoch_loss = 0.0
         with torch.no_grad():
@@ -504,16 +494,16 @@ def train_with_qat(model, device, train_loader, val_loader, criterion, optimizer
         avg_val_loss = val_epoch_loss / len(val_loader)
         val_losses.append(avg_val_loss)
 
-        # Update learning rate scheduler
+        #Update learning rate scheduler
         current_lr = optimizer.param_groups[0]['lr']
         learning_rates.append(current_lr)
 
         print(f"Epoch {epoch+1}/{epochs} | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f} | LR: {optimizer.param_groups[0]['lr']:.6f}")
         if epoch == epochs // 2:
-            print(">>> Freezing observers...")
+            print("Freezing observers...")
             model.apply(torch.quantization.disable_observer)
 
-    # Plot training curves
+    #plot training curves
     plt.figure(figsize=(12, 5))
     
     plt.subplot(1, 2, 1)
@@ -596,8 +586,8 @@ qat_model.to('cpu')
 print("\n=== Converting to Quantized Model ===")
 quantized_model = convert_to_quantized(qat_model)
 
-# Debug quantization issues
-debug_quantization(qat_model, quantized_model, test_loader, torch.device('cpu'))
+# Debug quantization issues     this is optional, debugs qat
+# debug_quantization(qat_model, quantized_model, test_loader, torch.device('cpu'))
 
 # Evaluate quantized model
 print("\n=== Quantized Model Evaluation ===")  # Explicitly move to CPU
