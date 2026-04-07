@@ -6,25 +6,25 @@
 
 struct NeuralNetwork {
     // Weights (INT8)
-    int8_t w_layer0[169];  // 13x13 
-    int8_t w_layer1[169];  // 13x13 
-    int8_t w_layer2[26];   // 13x2  
+    int8_t w_layer0[100];  // 10x10 
+    int8_t w_layer1[100];  // 10x10 
+    int8_t w_layer2[20];   // 10x2  
     
-    // Layer 0 (13x13) Quantization
-    int32_t layer0_scales[13];      
-    int32_t layer0_zp[13];          
+    // Layer 0 (10x10) Quantization
+    int32_t layer0_scales[10];      
+    int32_t layer0_zp[10];          
     
-    // Layer 1 (13x13) Quantization  
-    int32_t layer1_scales[13];     
-    int32_t layer1_zp[13];        
+    // Layer 1 (10x10) Quantization  
+    int32_t layer1_scales[10];     
+    int32_t layer1_zp[10];        
     
-    // Layer 2 (13x2) Quantization
+    // Layer 2 (10x2) Quantization
     int32_t layer2_scales[2];      
     int32_t layer2_zp[2];         
     
     // Normalization (Q16.16)
-    int64_t mean[13];               
-    int64_t std[13];                
+    int64_t mean[10];               
+    int64_t std[10];                
 };
 
 struct    // will be accessed from user space too for hot updating
@@ -61,17 +61,10 @@ struct norm_params                    //struct to save normialization parameters
 static __always_inline void normalize(struct norm_params *params)
 {
     #pragma clang loop unroll(full)
-    for (int i = 0; i < 13; i++) 
+    for (int i = 0; i < 10; i++) 
     {
         if (i >= params->N) break;
 
-            //skip normalization for binary feature s
-        if (i == 10 || i == 11 || i == 12) 
-        {
-            params->q_x[i] = params->no_n_x[i];  // direct copy, 0 or 1
-            //bpf_printk("Feature[%d] (binary): raw=%d normalized=%d\n", i, params->no_n_x[i], params->q_x[i]);   //debugging
-            continue;
-        }
         int64_t safe_std = params->std[i] != 0 ? (int64_t)params->std[i] : 1;
         int32_t safe_scale = params->scales[i] != 0 ? (int32_t)params->scales[i] : 1;
 

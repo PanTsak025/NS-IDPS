@@ -100,7 +100,7 @@ def measure_latency(model, dataloader, device, num_batches=100, warmup=10, use_p
     return avg_latency
 
 class NeuralNetwork(nn.Module):
-    def __init__(self, input_size=13, hidden_size=13, output_size=2):
+    def __init__(self, input_size=10, hidden_size=10, output_size=2):
         super(NeuralNetwork, self).__init__()
         self.quant = QuantStub()
         self.dequant = DeQuantStub()
@@ -261,19 +261,8 @@ set['Label'] = set['Label'].apply(lambda x: 0 if x == 'BENIGN' else 1)  # Conver
 set_cleaned = set.replace([np.inf, -np.inf], np.nan).dropna() # I drop 2,876 out of 2,830,743 entries
 # print(class_counts)
 
-set_cleaned['rule_small_seg_size'] = (
-    set_cleaned['min_seg_size_forward'] <= 20
-).astype(int)
-set_cleaned['rule_low_packet_count'] = (
-    set_cleaned['Total Fwd Packets'] <= 3
-).astype(int)
-
 # Binary flag for commonly abused/malicious ports
 malicious_ports = [22, 21, 23, 445, 3389, 5900, 135, 1433, 1900, 2323, 4444, 6667, 31337, 12345, 69]
-
-set_cleaned['rule_suspicious_port'] = (
-    set_cleaned['Destination Port'].isin(malicious_ports)
-).astype(int)
 
 X = set_cleaned.drop(columns=['Label'])
 
@@ -322,17 +311,9 @@ X_train, X_test, y_train, y_test = train_test_split(
 X_train = X_train.astype(np.float32).copy()
 X_test = X_test.astype(np.float32).copy()
 
-# float_cols = X_train.select_dtypes(include=['float32']).columns
-
-# scaler = StandardScaler()
-# X_train[float_cols] = scaler.fit_transform(X_train[float_cols])
-# X_test[float_cols] = scaler.transform(X_test[float_cols])
-
-# Explicitly exclude binary features
-excluded_features = ['rule_small_seg_size','rule_low_packet_count', 'rule_large_packet', 'rule_suspicious_port']
 
 # Scale all features except excluded ones
-features_to_scale = [col for col in X_train.columns if col.strip() not in excluded_features]
+features_to_scale = [col for col in X_train.columns if col.strip()]
 
 # Scale
 scaler = StandardScaler()

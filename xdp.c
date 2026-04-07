@@ -7,7 +7,6 @@
 #include <linux/udp.h>
 #include "flow.h"
 #include "nn.bpf.h"
-#define TIMEOUT_FLOW  1000000000ULL // 1 seconds
 #define BLOCK_SECONDS 10000000000ULL // 10 seconds  
 struct
 {
@@ -28,11 +27,12 @@ struct
 struct 
 {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    // max entries are set at 2 for now, for latency metrics change to 5 (benign (0), malicious (1))
+    // max entries are set at 2 for now (benign (0), malicious (1)), for latency metrics change to 5 
     __uint(max_entries, 2); // 5 labels: benign (0) and malicious (1), (2) total ns, (3) packets extraction time, (4) all packets
     __type(key, __u32);
     __type(value, __u64);
 } label_counters SEC(".maps");
+
 static inline int get_key(struct xdp_md *ctx,  struct flow_key *key)        // this function gets called inside each XDP program and fetces flow 5-tuple
 {
     void *data_start = (void *)(long)ctx->data;
@@ -192,22 +192,6 @@ int xdp_nn(struct xdp_md *ctx)
             new_values.first_seen = packet_time;
             new_values.last_seen = new_values.first_seen;
             new_values.dst_port = bpf_ntohs(tcp->dest);
-            if (new_values.dst_port == 22   || new_values.dst_port == 21    ||        // check if possible malicious port
-                new_values.dst_port == 23   || new_values.dst_port == 445   || 
-                new_values.dst_port == 3389 || new_values.dst_port == 5900  ||
-                new_values.dst_port == 135  || new_values.dst_port == 1433  ||
-                new_values.dst_port == 1900 || new_values.dst_port == 2323  ||
-                new_values.dst_port == 4444 || new_values.dst_port == 6667  ||
-                new_values.dst_port == 31337|| new_values.dst_port == 12345 ||
-                new_values.dst_port == 69) 
-            {
-                new_values.rule_1_mal_ports = 1;
-            } 
-            else 
-            {
-                new_values.rule_1_mal_ports = 0;
-            }
-
             new_values.init_win = bpf_ntohs(tcp->window);
             //bpf_printk("Initial TCP window size: %u", new_values.init_win);       //Debugging
             //bpf_printk("New flow: src=%x spt=%u dst=%x dpt=%u\n",
@@ -231,25 +215,8 @@ int xdp_nn(struct xdp_md *ctx)
 
         __u64 ddos_now = bpf_ktime_get_ns();
 
-        if (tcp->fin || tcp->rst)                    // fill rules
+        if (tcp->fin || tcp->rst)                    // Complete/Terminate flow
         {
-                if (value->seg_size_min <= 20)
-                {
-                    value->rule_2_small_seg_size = 1;
-                }
-                else
-                {
-                    value->rule_2_small_seg_size = 0;
-                }
-
-                if(value->pkt_count <= 3)
-                {
-                    value->rule_3_low_pack_count = 1;
-                }
-                else
-                {
-                    value->rule_3_low_pack_count = 0;
-                }
                 // bpf_printk("src:%x dst:%x spt:%u dpt:%u", key.source_ip, key.destination_ip, key.source_port, key.destination_port);   //Debugging
                 // bpf_printk("FLOW dst:%hu pkts:%u bytes:%u\n",                    
                 //     value->dst_port, value->pkt_count, value->total_bytes);
@@ -260,8 +227,8 @@ int xdp_nn(struct xdp_md *ctx)
                 // bpf_printk("seg_min:%llu psh:%hhu\n",                                             //Debugging
                 //     value->seg_size_min, value->psh_flags);
                 
-                // bpf_printk("iat_min:%llu iat_max:%llu, rule1: %u\n",                                   //Debugging
-                //     value->iat_stats.min, value->iat_stats.max, value->rule_1_mal_ports);
+                // bpf_printk("iat_min:%llu iat_max:%llu\n",                                   //Debugging
+                //     value->iat_stats.min, value->iat_stats.max);
                 
                 // bpf_printk("Flow %s: %s",                                                             //Debugging
                 //      (tcp->fin || tcp->rst) ? "ended by FIN/RST" : "timed out",
@@ -304,7 +271,7 @@ int xdp_live_feature_preprocessing(struct xdp_md *ctx)
         bpf_printk("failed2\n");
         return XDP_PASS;
     }
-    int64_t features[13] = 
+    int64_t features[10] = 
     {
         value->dst_port,
         value->init_win,
@@ -315,10 +282,7 @@ int xdp_live_feature_preprocessing(struct xdp_md *ctx)
         value->iat_stats.min,
         value->pkt_count,
         value->iat_stats.max,
-        value->min_pkt_len,
-        value->rule_1_mal_ports,
-        value->rule_2_small_seg_size,
-        value->rule_3_low_pack_count
+        value->min_pkt_len
     };
     struct norm_params p = 
     {
@@ -328,7 +292,7 @@ int xdp_live_feature_preprocessing(struct xdp_md *ctx)
         .std = nn->std,
         .scales = nn->layer0_scales,
         .zps = nn->layer0_zp,
-        .N = 13
+        .N = 10
     };
     //value->detection_start_time = bpf_ktime_get_ns();    //uncomment for latency
     normalize(&p);
@@ -346,12 +310,7 @@ int xdp_live_feature_preprocessing(struct xdp_md *ctx)
 
     // bpf_printk("           : %d %d %d %d",
     //     value->normalized_weights[8],
-    //     value->normalized_weights[9],
-    //     value->normalized_weights[10],
-    //     value->normalized_weights[11]);
-
-    // bpf_printk("           : %d",
-    //     value->normalized_weights[12]);
+    //     value->normalized_weights[9]);
 
     bpf_tail_call(ctx, &progs, 1);
     return XDP_PASS;
@@ -386,8 +345,8 @@ int xdp_layer_0(struct xdp_md *ctx)
         .q_x = value->layer_output,
         .scales = nn->layer0_scales,
         .zps = nn->layer0_zp,
-        .N = 13,
-        .M = 13,
+        .N = 10,
+        .M = 10,
         .w = nn->w_layer0
     };
     linear_relu(&p);
@@ -405,12 +364,7 @@ int xdp_layer_0(struct xdp_md *ctx)
 
     // bpf_printk("           : %d %d %d %d",
     //     value->layer_output[8],
-    //     value->layer_output[9],
-    //     value->layer_output[10],
-    //     value->layer_output[11]);
-
-    // bpf_printk("           : %d",
-    //     value->layer_output[12]);
+    //     value->layer_output[9]);
 
     bpf_tail_call(ctx, &progs, 2);
     return XDP_PASS;
@@ -444,8 +398,8 @@ int xdp_layer_1(struct xdp_md *ctx)
         .q_x = value->normalized_weights,
         .scales = nn->layer1_scales,
         .zps = nn->layer1_zp,
-        .N = 13,
-        .M = 13,
+        .N = 10,
+        .M = 10,
         .w = nn->w_layer1
     };
     linear_relu(&p);
@@ -463,12 +417,7 @@ int xdp_layer_1(struct xdp_md *ctx)
 
     // bpf_printk("           : %d %d %d %d",
     //     value->normalized_weights[8],
-    //     value->normalized_weights[9],
-    //     value->normalized_weights[10],
-    //     value->normalized_weights[11]);
-
-    // bpf_printk("           : %d",
-    //     value->normalized_weights[12]);
+    //     value->normalized_weights[9]);
 
     bpf_tail_call(ctx, &progs, 3);
     return XDP_PASS;
@@ -504,7 +453,7 @@ int xdp_layer_2(struct xdp_md *ctx)
         .q_x = value->layer_output,
         .scales = nn->layer2_scales,
         .zps = nn->layer2_zp,
-        .N = 13,
+        .N = 10,
         .M = 2,
         .w = nn->w_layer2
     };
@@ -513,7 +462,7 @@ int xdp_layer_2(struct xdp_md *ctx)
     int diff = value->layer_output[1] - value->layer_output[0];
     int label = diff > 53;  // 53 for 0.7085299 threshold
 
-    __u32 labelkey = label ? 1 : 0;
+    __u32 labelkey = label ? 1 : 0;                                   //take final decision based on threshold
     __u64 *count = bpf_map_lookup_elem(&label_counters, &labelkey);
     if (count) 
     {

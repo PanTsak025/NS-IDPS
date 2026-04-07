@@ -28,9 +28,7 @@ struct flow_value
     __u64 header_length;
     __u32 pkt_count;   
     __u64 seg_size_min;
-    __u8 rule_1_mal_ports;
-    __u8 rule_2_small_seg_size;
-    __u8 rule_3_low_pack_count;
+
     struct 
     {
         __u64 min;
@@ -41,8 +39,8 @@ struct flow_value
     __u64 feat_extraction_time;
 
     int32_t nn_index;
-    int8_t normalized_weights[13];
-    int8_t layer_output[13];
+    int8_t normalized_weights[10];
+    int8_t layer_output[10];
 };
 
 struct 
@@ -68,9 +66,6 @@ static inline void new_flow(struct flow_value *values)       //initialize new fl
     values->init_win = 0;
     values->iat_stats.min = 0;
     values->iat_stats.max = 0;
-    values->rule_1_mal_ports = 2;
-    values->rule_2_small_seg_size = 2;
-    values->rule_3_low_pack_count = 2;
 }
 
 static inline void update_flow(struct flow_value *values, __u64 packet_length, __u64 packet_time, struct tcphdr *tcp,__u64 segment_size)      //update flow

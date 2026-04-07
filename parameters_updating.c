@@ -4,25 +4,25 @@
 
 struct NeuralNetwork {
     // Weights
-    int8_t w_layer0[169];  // 13x13
-    int8_t w_layer1[169];  // 13x13
-    int8_t w_layer2[26];   // 13x2
+    int8_t w_layer0[100];  // 10x10
+    int8_t w_layer1[100];  // 10x10
+    int8_t w_layer2[20];   // 10x2
     
-    // Layer 0 (13x13)
-    int32_t layer0_scales[13];
-    int32_t layer0_zp[13];
+    // Layer 0 (10x10)
+    int32_t layer0_scales[10];
+    int32_t layer0_zp[10];
     
-    // Layer 1 (13x13)  
-    int32_t layer1_scales[13];
-    int32_t layer1_zp[13];
+    // Layer 1 (10x10)  
+    int32_t layer1_scales[10];
+    int32_t layer1_zp[10];
     
-    // Layer 2 (13x2)
+    // Layer 2 (10x2)
     int32_t layer2_scales[2];
     int32_t layer2_zp[2];
     
     // Normalization (Q16.16)
-    int64_t mean[13];
-    int64_t std[13];
+    int64_t mean[10];
+    int64_t std[10];
 };
 
 int main()
